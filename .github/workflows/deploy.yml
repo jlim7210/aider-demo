@@ -1,0 +1,52 @@
+﻿name: Deploy on main
+
+on:
+  workflow_dispatch:        # Actions 화면에 Run workflow 버튼
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, Windows, X64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Print context (sanity check)
+        shell: powershell
+        run: |
+          Write-Host "Hostname:"; hostname
+          Write-Host "PowerShell version:"; $PSVersionTable.PSVersion
+          if (Get-Command docker -ErrorAction SilentlyContinue) {
+            docker --version
+            try { docker compose version } catch { docker-compose --version }
+          } else {
+            Write-Error "Docker not found in PATH"
+          }
+
+      - name: Deploy via Docker Compose (if present)
+        if: ${{ hashFiles('**/docker-compose.yml') != '' }}
+        shell: powershell
+        run: |
+          if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+            throw "Docker CLI not found"
+          }
+          # docker compose 우선, 실패 시 docker-compose로 폴백
+          try {
+            docker compose pull 2>$null
+            docker compose up -d
+          } catch {
+            docker-compose pull 2>$null
+            docker-compose up -d
+          }
+
+      - name: Slack notify
+        if: always() && env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          JOB_STATUS: ${{ job.status }}
+        shell: powershell
+        run: |
+          $payload = @{ text = "Deploy $env:JOB_STATUS on $env:GITHUB_REPOSITORY@$env:GITHUB_SHA" } | ConvertTo-Json
+          Invoke-RestMethod -Uri $env:SLACK_WEBHOOK_URL -Method Post -ContentType 'application/json' -Body $payload
